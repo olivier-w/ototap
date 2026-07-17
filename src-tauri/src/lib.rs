@@ -316,6 +316,33 @@ fn toggle_clicker_internal(app: &AppHandle, controller: &ControllerHandle) -> Re
 }
 
 #[tauri::command]
+fn set_interval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    interval_milliseconds: u64,
+) -> Result<ClickerStatus, String> {
+    validate_interval(interval_milliseconds)?;
+
+    let status = {
+        let mut guard = state
+            .controller
+            .lock()
+            .map_err(|_| "The clicker state could not be locked.".to_string())?;
+
+        if guard.status.status == SessionStatus::Running {
+            return Err("Stop the clicker before changing the interval.".to_string());
+        }
+
+        guard.status.interval_milliseconds = interval_milliseconds;
+        guard.status.error_message = None;
+        guard.status.clone()
+    };
+
+    let _ = app.emit(STATUS_EVENT, status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
 fn start_clicker(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -402,6 +429,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_interval,
             start_clicker,
             stop_clicker,
             toggle_clicker,

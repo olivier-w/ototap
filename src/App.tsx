@@ -105,6 +105,23 @@ function App() {
   }, [isRunning, status.nextClickAt]);
 
   const buttonLabel = useMemo(() => (isRunning ? "Stop clicking" : "Start clicking"), [isRunning]);
+  const syncInterval = useCallback(async (value: string) => {
+    const milliseconds = parseIntervalMilliseconds(value);
+
+    if (milliseconds === null) {
+      return;
+    }
+
+    try {
+      const nextStatus = await invoke<ClickerStatus>("set_interval", {
+        intervalMilliseconds: milliseconds,
+      });
+      setStatus(nextStatus);
+      setRuntimeError(null);
+    } catch (error) {
+      setRuntimeError(errorMessage(error));
+    }
+  }, []);
 
   const runCommand = useCallback(async (command: "start" | "stop" | "toggle") => {
     setBusy(true);
@@ -149,6 +166,8 @@ function App() {
     if (intervalError) {
       setIntervalError(null);
     }
+
+    void syncInterval(value);
   };
 
   return (
