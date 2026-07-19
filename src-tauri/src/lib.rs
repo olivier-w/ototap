@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const STATUS_EVENT: &str = "clicker-status";
 const GLOBAL_HOTKEY: &str = "CTRL+ALT+A";
@@ -40,6 +40,7 @@ pub enum SessionStatus {
 pub struct ClickerStatus {
     status: SessionStatus,
     interval_milliseconds: u64,
+    hotkey: String,
     click_count: u64,
     target_point: Option<ScreenPoint>,
     next_click_at: Option<u64>,
@@ -48,6 +49,7 @@ pub struct ClickerStatus {
 
 struct ClickerController {
     status: ClickerStatus,
+    hotkey_registered: bool,
     stop_sender: Option<StopSender>,
     worker: Option<JoinHandle<()>>,
 }
@@ -62,11 +64,13 @@ impl ClickerController {
             status: ClickerStatus {
                 status: SessionStatus::Ready,
                 interval_milliseconds: DEFAULT_INTERVAL_MILLISECONDS,
+                hotkey: GLOBAL_HOTKEY.to_string(),
                 click_count: 0,
                 target_point: None,
                 next_click_at: None,
                 error_message: None,
             },
+            hotkey_registered: false,
             stop_sender: None,
             worker: None,
         }
@@ -98,6 +102,10 @@ fn validate_interval(interval_milliseconds: u64) -> Result<(), String> {
             "Interval must be between {MIN_INTERVAL_MILLISECONDS} and {MAX_INTERVAL_MILLISECONDS} milliseconds."
         ))
     }
+}
+
+fn hotkey_unavailable_message(hotkey: &str) -> String {
+    format!("{hotkey} is unavailable. Record another shortcut.")
 }
 
 fn emit_status(app: &AppHandle, controller: &ControllerHandle, status: ClickerStatus) {
@@ -150,9 +158,8 @@ fn worker_loop(
                         y: target_point.y,
                     });
                     next_deadline = Instant::now() + interval;
-                    guard.status.next_click_at = Some(
-                        current_time_millis().saturating_add(interval_milliseconds),
-                    );
+                    guard.status.next_click_at =
+                        Some(current_time_millis().saturating_add(interval_milliseconds));
                     guard.status.clone()
                 };
 
@@ -169,6 +176,7 @@ fn status_after_error(controller: &ControllerHandle, message: String) -> Clicker
             return ClickerStatus {
                 status: SessionStatus::Error,
                 interval_milliseconds: DEFAULT_INTERVAL_MILLISECONDS,
+                hotkey: GLOBAL_HOTKEY.to_string(),
                 click_count: 0,
                 target_point: None,
                 next_click_at: None,
@@ -193,14 +201,17 @@ fn stop_clicker_internal(app: &AppHandle, controller: &ControllerHandle) -> Clic
     let (stop_sender, worker) = {
         let mut guard = match controller.lock() {
             Ok(guard) => guard,
-            Err(_) => return ClickerStatus {
-                status: SessionStatus::Error,
-                interval_milliseconds: DEFAULT_INTERVAL_MILLISECONDS,
-                click_count: 0,
-                target_point: None,
-                next_click_at: None,
-                error_message: Some("The clicker state could not be locked.".to_string()),
-            },
+            Err(_) => {
+                return ClickerStatus {
+                    status: SessionStatus::Error,
+                    interval_milliseconds: DEFAULT_INTERVAL_MILLISECONDS,
+                    hotkey: GLOBAL_HOTKEY.to_string(),
+                    click_count: 0,
+                    target_point: None,
+                    next_click_at: None,
+                    error_message: Some("The clicker state could not be locked.".to_string()),
+                }
+            }
         };
 
         (guard.stop_sender.take(), guard.worker.take())
@@ -217,14 +228,17 @@ fn stop_clicker_internal(app: &AppHandle, controller: &ControllerHandle) -> Clic
     let status = {
         let mut guard = match controller.lock() {
             Ok(guard) => guard,
-            Err(_) => return ClickerStatus {
-                status: SessionStatus::Error,
-                interval_milliseconds: DEFAULT_INTERVAL_MILLISECONDS,
-                click_count: 0,
-                target_point: None,
-                next_click_at: None,
-                error_message: Some("The clicker state could not be locked.".to_string()),
-            },
+            Err(_) => {
+                return ClickerStatus {
+                    status: SessionStatus::Error,
+                    interval_milliseconds: DEFAULT_INTERVAL_MILLISECONDS,
+                    hotkey: GLOBAL_HOTKEY.to_string(),
+                    click_count: 0,
+                    target_point: None,
+                    next_click_at: None,
+                    error_message: Some("The clicker state could not be locked.".to_string()),
+                }
+            }
         };
 
         if guard.status.status == SessionStatus::Running {
@@ -260,18 +274,23 @@ fn start_clicker_internal(
             return Err("The clicker is already running.".to_string());
         }
 
+        let hotkey = guard.status.hotkey.clone();
+        let error_message = if guard.hotkey_registered {
+            None
+        } else {
+            Some(hotkey_unavailable_message(&hotkey))
+        };
         guard.status = ClickerStatus {
             status: SessionStatus::Running,
             interval_milliseconds,
+            hotkey,
             click_count: 0,
             target_point: Some(ScreenPoint {
                 x: target_point.x,
                 y: target_point.y,
             }),
-            next_click_at: Some(
-                current_time_millis().saturating_add(interval_milliseconds),
-            ),
-            error_message: None,
+            next_click_at: Some(current_time_millis().saturating_add(interval_milliseconds)),
+            error_message,
         };
         guard.stop_sender = Some(stop_sender);
         guard.status.clone()
@@ -295,7 +314,10 @@ fn start_clicker_internal(
     Ok(status)
 }
 
-fn toggle_clicker_internal(app: &AppHandle, controller: &ControllerHandle) -> Result<ClickerStatus, String> {
+fn toggle_clicker_internal(
+    app: &AppHandle,
+    controller: &ControllerHandle,
+) -> Result<ClickerStatus, String> {
     let should_stop = controller
         .lock()
         .map_err(|_| "The clicker state could not be locked.".to_string())?
@@ -334,8 +356,73 @@ fn set_interval(
         }
 
         guard.status.interval_milliseconds = interval_milliseconds;
-        guard.status.error_message = None;
+        guard.status.error_message = if guard.hotkey_registered {
+            None
+        } else {
+            Some(hotkey_unavailable_message(&guard.status.hotkey))
+        };
         guard.status.clone()
+    };
+
+    let _ = app.emit(STATUS_EVENT, status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+fn set_hotkey(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    hotkey: String,
+) -> Result<ClickerStatus, String> {
+    let hotkey = hotkey.trim().to_uppercase();
+
+    if !hotkey.contains('+') {
+        return Err("Use at least one modifier and one key for the shortcut.".to_string());
+    }
+
+    let (current_hotkey, current_status, current_hotkey_registered) = {
+        let guard = state
+            .controller
+            .lock()
+            .map_err(|_| "The clicker state could not be locked.".to_string())?;
+        (
+            guard.status.hotkey.clone(),
+            guard.status.clone(),
+            guard.hotkey_registered,
+        )
+    };
+
+    if hotkey == current_hotkey && current_hotkey_registered {
+        return Ok(current_status);
+    }
+
+    app.global_shortcut()
+        .register(hotkey.as_str())
+        .map_err(|error| format!("That shortcut is unavailable: {error}"))?;
+
+    if current_hotkey_registered && hotkey != current_hotkey {
+        if let Err(error) = app.global_shortcut().unregister(current_hotkey.as_str()) {
+            let _ = app.global_shortcut().unregister(hotkey.as_str());
+            return Err(format!(
+                "The previous shortcut could not be replaced: {error}"
+            ));
+        }
+    }
+
+    let status = match state.controller.lock() {
+        Ok(mut guard) => {
+            guard.status.hotkey = hotkey.clone();
+            guard.status.error_message = None;
+            guard.hotkey_registered = true;
+            guard.status.clone()
+        }
+        Err(_) => {
+            let _ = app.global_shortcut().unregister(hotkey.as_str());
+            if current_hotkey_registered && hotkey != current_hotkey {
+                let _ = app.global_shortcut().register(current_hotkey.as_str());
+            }
+            return Err("The clicker state could not be locked.".to_string());
+        }
     };
 
     let _ = app.emit(STATUS_EVENT, status.clone());
@@ -406,9 +493,6 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let controller = Arc::new(Mutex::new(ClickerController::new()));
     let state = AppState { controller };
-    let shortcut = GLOBAL_HOTKEY
-        .parse()
-        .expect("the built-in global shortcut must be valid");
 
     tauri::Builder::default()
         .manage(state)
@@ -416,20 +500,48 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, pressed_shortcut, event| {
-                    if pressed_shortcut == &shortcut && event.state() == ShortcutState::Pressed {
-                        let state = app.state::<AppState>();
-                        let _ = toggle_clicker_internal(app, &state.controller);
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+
+                    let state = app.state::<AppState>();
+                    let configured_hotkey = match state.controller.lock() {
+                        Ok(guard) => guard.status.hotkey.clone(),
+                        Err(_) => return,
+                    };
+
+                    if let Ok(configured_shortcut) = configured_hotkey.parse::<Shortcut>() {
+                        if pressed_shortcut == &configured_shortcut {
+                            let _ = toggle_clicker_internal(app, &state.controller);
+                        }
                     }
                 })
                 .build(),
         )
         .setup(|app| {
-            app.global_shortcut().register(GLOBAL_HOTKEY)?;
+            let registration_result = app.global_shortcut().register(GLOBAL_HOTKEY);
+            let state = app.state::<AppState>();
+
+            if let Ok(mut guard) = state.controller.lock() {
+                match registration_result {
+                    Ok(()) => {
+                        guard.hotkey_registered = true;
+                        guard.status.error_message = None;
+                    }
+                    Err(_) => {
+                        guard.hotkey_registered = false;
+                        guard.status.error_message =
+                            Some(hotkey_unavailable_message(GLOBAL_HOTKEY));
+                    }
+                }
+            }
+
             create_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             set_interval,
+            set_hotkey,
             start_clicker,
             stop_clicker,
             toggle_clicker,
@@ -453,7 +565,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_interval, SessionStatus, DEFAULT_INTERVAL_MILLISECONDS, MAX_INTERVAL_MILLISECONDS, MIN_INTERVAL_MILLISECONDS};
+    use super::{
+        hotkey_unavailable_message, validate_interval, ClickerController, SessionStatus,
+        DEFAULT_INTERVAL_MILLISECONDS, GLOBAL_HOTKEY, MAX_INTERVAL_MILLISECONDS,
+        MIN_INTERVAL_MILLISECONDS,
+    };
 
     #[test]
     fn validates_supported_interval_bounds() {
@@ -465,8 +581,12 @@ mod tests {
 
     #[test]
     fn default_status_contract_stays_ready() {
-        let status = SessionStatus::Ready;
-        assert_eq!(status, SessionStatus::Ready);
+        let controller = ClickerController::new();
+
+        assert_eq!(controller.status.status, SessionStatus::Ready);
+        assert_eq!(controller.status.interval_milliseconds, 5_000);
         assert_eq!(DEFAULT_INTERVAL_MILLISECONDS, 5_000);
+        assert!(!controller.hotkey_registered);
+        assert!(hotkey_unavailable_message(GLOBAL_HOTKEY).contains(GLOBAL_HOTKEY));
     }
 }

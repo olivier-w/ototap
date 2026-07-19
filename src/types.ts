@@ -8,6 +8,7 @@ export interface ScreenPoint {
 export interface ClickerStatus {
   status: SessionStatus;
   intervalMilliseconds: number;
+  hotkey: string;
   clickCount: number;
   targetPoint: ScreenPoint | null;
   nextClickAt: number | null;
@@ -15,5 +16,5 @@ export interface ClickerStatus {
 }
 
 export const CLICKER_STATUS_EVENT = "clicker-status";
-export const GLOBAL_HOTKEY = "Ctrl+Alt+A";
+export const DEFAULT_GLOBAL_HOTKEY = "CTRL+ALT+A";
 export const DEFAULT_INTERVAL_MILLISECONDS = 5000;

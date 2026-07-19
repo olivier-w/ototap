@@ -1,18 +1,45 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  DEFAULT_GLOBAL_HOTKEY,
   DEFAULT_INTERVAL_MILLISECONDS,
-  GLOBAL_HOTKEY,
   type ClickerStatus,
   CLICKER_STATUS_EVENT,
 } from "./types";
-import { MAX_INTERVAL_MILLISECONDS, MIN_INTERVAL_MILLISECONDS, parseIntervalMilliseconds } from "./interval";
+import {
+  formatIntervalValue,
+  MAX_INTERVAL_MILLISECONDS,
+  MIN_INTERVAL_MILLISECONDS,
+  parseIntervalValue,
+  type IntervalUnit,
+} from "./interval";
+
+const HOTKEY_STORAGE_KEY = "ototap.global-hotkey";
+const PRESET_INTERVALS = [1000, 5000, 10_000, 30_000];
+const DIAL_MIN_ANGLE = -132;
+const DIAL_MAX_ANGLE = 132;
+const DIAL_LABELS = [
+  { milliseconds: 100, label: "0.1" },
+  { milliseconds: 1000, label: "1" },
+  { milliseconds: 5000, label: "5" },
+  { milliseconds: 10_000, label: "10" },
+  { milliseconds: 30_000, label: "30" },
+];
 
 const INITIAL_STATUS: ClickerStatus = {
   status: "ready",
   intervalMilliseconds: DEFAULT_INTERVAL_MILLISECONDS,
+  hotkey: DEFAULT_GLOBAL_HOTKEY,
   clickCount: 0,
   targetPoint: null,
   nextClickAt: null,
@@ -34,32 +61,146 @@ function statusLabel(status: ClickerStatus["status"]): string {
     case "stopped":
       return "Stopped";
     case "error":
-      return "Needs attention";
+      return "Attention";
     default:
       return "Ready";
   }
 }
 
-function formatTarget(targetPoint: ClickerStatus["targetPoint"]): string {
-  return targetPoint ? `${targetPoint.x}, ${targetPoint.y}` : "Not captured";
+function displayHotkeyPart(part: string): string {
+  switch (part) {
+    case "CTRL":
+      return "Ctrl";
+    case "ALT":
+      return "Alt";
+    case "SHIFT":
+      return "Shift";
+    case "SUPER":
+      return "Win";
+    default:
+      return part;
+  }
+}
+
+function displayHotkey(hotkey: string): string {
+  return hotkey.split("+").map(displayHotkeyPart).join(" + ");
+}
+
+function shortcutKey(event: KeyboardEvent<HTMLButtonElement>): string | null {
+  if (/^Key[A-Z]$/.test(event.code)) {
+    return event.code.slice(3);
+  }
+
+  if (/^Digit[0-9]$/.test(event.code)) {
+    return event.code.slice(5);
+  }
+
+  if (/^F(?:[1-9]|1[0-2])$/.test(event.code)) {
+    return event.code;
+  }
+
+  return null;
+}
+
+function shortcutFromEvent(event: KeyboardEvent<HTMLButtonElement>): string | null {
+  const parts: string[] = [];
+
+  if (event.ctrlKey) {
+    parts.push("CTRL");
+  }
+  if (event.altKey) {
+    parts.push("ALT");
+  }
+  if (event.shiftKey) {
+    parts.push("SHIFT");
+  }
+  if (event.metaKey) {
+    parts.push("SUPER");
+  }
+
+  const key = shortcutKey(event);
+
+  if (parts.length === 0 || key === null || (parts.length === 1 && parts[0] === "ALT" && key === "F4")) {
+    return null;
+  }
+
+  parts.push(key);
+  return parts.join("+");
+}
+
+function intervalErrorMessage(unit: IntervalUnit): string {
+  return unit === "seconds"
+    ? "Use a value from 0.1 to 30 seconds."
+    : "Use a whole number from 100 to 30,000 milliseconds.";
+}
+
+function clampInterval(milliseconds: number): number {
+  const rounded = Math.round(milliseconds / 100) * 100;
+  return Math.min(MAX_INTERVAL_MILLISECONDS, Math.max(MIN_INTERVAL_MILLISECONDS, rounded));
+}
+
+function intervalToDialAngle(milliseconds: number): number {
+  const value = clampInterval(milliseconds);
+  const minimum = Math.log(MIN_INTERVAL_MILLISECONDS);
+  const maximum = Math.log(MAX_INTERVAL_MILLISECONDS);
+  const ratio = (Math.log(value) - minimum) / (maximum - minimum);
+  return DIAL_MIN_ANGLE + ratio * (DIAL_MAX_ANGLE - DIAL_MIN_ANGLE);
+}
+
+function dialAngleToInterval(angle: number): number {
+  const clampedAngle = Math.min(DIAL_MAX_ANGLE, Math.max(DIAL_MIN_ANGLE, angle));
+  const ratio = (clampedAngle - DIAL_MIN_ANGLE) / (DIAL_MAX_ANGLE - DIAL_MIN_ANGLE);
+  const minimum = Math.log(MIN_INTERVAL_MILLISECONDS);
+  const maximum = Math.log(MAX_INTERVAL_MILLISECONDS);
+  return clampInterval(Math.exp(minimum + ratio * (maximum - minimum)));
+}
+
+function intervalFromPointer(event: PointerEvent<HTMLButtonElement>): number {
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const x = event.clientX - bounds.left - bounds.width / 2;
+  const y = event.clientY - bounds.top - bounds.height / 2;
+  let angle = Math.atan2(y, x) * (180 / Math.PI) + 90;
+
+  if (angle > 180) {
+    angle -= 360;
+  }
+
+  return dialAngleToInterval(angle);
+}
+
+function dialLabelPosition(milliseconds: number): { left: string; top: string } {
+  const angle = intervalToDialAngle(milliseconds);
+  const radians = (angle - 90) * (Math.PI / 180);
+  const radius = 45;
+  return {
+    left: `${50 + Math.cos(radians) * radius}%`,
+    top: `${50 + Math.sin(radians) * radius}%`,
+  };
 }
 
 function App() {
-  const [intervalInput, setIntervalInput] = useState(String(DEFAULT_INTERVAL_MILLISECONDS));
+  const [intervalUnit, setIntervalUnit] = useState<IntervalUnit>("seconds");
+  const [intervalInput, setIntervalInput] = useState(
+    formatIntervalValue(DEFAULT_INTERVAL_MILLISECONDS, "seconds"),
+  );
   const [status, setStatus] = useState<ClickerStatus>(INITIAL_STATUS);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
+  const [shortcutBusy, setShortcutBusy] = useState(false);
+  const [isRecordingShortcut, setIsRecordingShortcut] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [intervalError, setIntervalError] = useState<string | null>(null);
+  const [shortcutMessage, setShortcutMessage] = useState<string | null>(null);
+  const dialValueRef = useRef(DEFAULT_INTERVAL_MILLISECONDS);
 
   const isRunning = status.status === "running";
   const intervalMilliseconds = status.intervalMilliseconds || DEFAULT_INTERVAL_MILLISECONDS;
+  const displayedMilliseconds = parseIntervalValue(intervalInput, intervalUnit) ?? intervalMilliseconds;
   const remainingMilliseconds = status.nextClickAt
     ? Math.max(0, status.nextClickAt - now)
     : 0;
-  const progress = isRunning
-    ? Math.min(100, Math.max(0, ((intervalMilliseconds - remainingMilliseconds) / intervalMilliseconds) * 100))
-    : 0;
+  const hotkeyParts = status.hotkey.split("+").map(displayHotkeyPart);
+  const dialAngle = intervalToDialAngle(displayedMilliseconds);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -70,15 +211,26 @@ function App() {
         unlisten = await listen<ClickerStatus>(CLICKER_STATUS_EVENT, (event) => {
           if (active) {
             setStatus(event.payload);
+            dialValueRef.current = event.payload.intervalMilliseconds;
             setRuntimeError(null);
           }
         });
 
-        const currentStatus = await invoke<ClickerStatus>("get_clicker_status");
+        let currentStatus = await invoke<ClickerStatus>("get_clicker_status");
+        const savedHotkey = window.localStorage.getItem(HOTKEY_STORAGE_KEY);
+
+        if (savedHotkey && savedHotkey !== currentStatus.hotkey) {
+          try {
+            currentStatus = await invoke<ClickerStatus>("set_hotkey", { hotkey: savedHotkey });
+          } catch {
+            window.localStorage.removeItem(HOTKEY_STORAGE_KEY);
+          }
+        }
 
         if (active) {
           setStatus(currentStatus);
-          setIntervalInput(String(currentStatus.intervalMilliseconds));
+          dialValueRef.current = currentStatus.intervalMilliseconds;
+          setIntervalInput(formatIntervalValue(currentStatus.intervalMilliseconds, "seconds"));
         }
       } catch (error) {
         if (active) {
@@ -104,9 +256,8 @@ function App() {
     return () => window.clearInterval(timer);
   }, [isRunning, status.nextClickAt]);
 
-  const buttonLabel = useMemo(() => (isRunning ? "Stop clicking" : "Start clicking"), [isRunning]);
-  const syncInterval = useCallback(async (value: string) => {
-    const milliseconds = parseIntervalMilliseconds(value);
+  const syncInterval = useCallback(async (value: string, unit: IntervalUnit) => {
+    const milliseconds = parseIntervalValue(value, unit);
 
     if (milliseconds === null) {
       return;
@@ -117,22 +268,36 @@ function App() {
         intervalMilliseconds: milliseconds,
       });
       setStatus(nextStatus);
+      dialValueRef.current = nextStatus.intervalMilliseconds;
       setRuntimeError(null);
     } catch (error) {
       setRuntimeError(errorMessage(error));
     }
   }, []);
 
-  const runCommand = useCallback(async (command: "start" | "stop" | "toggle") => {
+  const setIntervalFromMilliseconds = useCallback((milliseconds: number, shouldSync: boolean) => {
+    const nextMilliseconds = clampInterval(milliseconds);
+    const nextValue = formatIntervalValue(nextMilliseconds, "seconds");
+    dialValueRef.current = nextMilliseconds;
+    setIntervalUnit("seconds");
+    setIntervalInput(nextValue);
+    setIntervalError(null);
+
+    if (shouldSync) {
+      void syncInterval(nextValue, "seconds");
+    }
+  }, [syncInterval]);
+
+  const runCommand = useCallback(async (command: "start" | "stop") => {
     setBusy(true);
     setRuntimeError(null);
 
     try {
       if (command === "start") {
-        const milliseconds = parseIntervalMilliseconds(intervalInput);
+        const milliseconds = parseIntervalValue(intervalInput, intervalUnit);
 
         if (milliseconds === null) {
-          setIntervalError(`Choose a whole number from ${MIN_INTERVAL_MILLISECONDS} to ${MAX_INTERVAL_MILLISECONDS} ms.`);
+          setIntervalError(intervalErrorMessage(intervalUnit));
           return;
         }
 
@@ -144,14 +309,30 @@ function App() {
         return;
       }
 
-      const nextStatus = await invoke<ClickerStatus>(command === "stop" ? "stop_clicker" : "toggle_clicker");
+      const nextStatus = await invoke<ClickerStatus>("stop_clicker");
       setStatus(nextStatus);
     } catch (error) {
       setRuntimeError(errorMessage(error));
     } finally {
       setBusy(false);
     }
-  }, [intervalInput]);
+  }, [intervalInput, intervalUnit]);
+
+  const minimizeWindow = async () => {
+    try {
+      await getCurrentWindow().minimize();
+    } catch (error) {
+      setRuntimeError(errorMessage(error));
+    }
+  };
+
+  const toggleMaximizeWindow = async () => {
+    try {
+      await getCurrentWindow().toggleMaximize();
+    } catch (error) {
+      setRuntimeError(errorMessage(error));
+    }
+  };
 
   const hideWindow = async () => {
     try {
@@ -161,93 +342,355 @@ function App() {
     }
   };
 
-  const handleIntervalChange = (value: string) => {
-    setIntervalInput(value);
-    if (intervalError) {
-      setIntervalError(null);
+  const handleTitlebarMouseDown = (event: MouseEvent<HTMLElement>) => {
+    if (event.buttons !== 1) {
+      return;
     }
 
-    void syncInterval(value);
+    if (event.target instanceof Element && event.target.closest("button")) {
+      return;
+    }
+
+    event.preventDefault();
+    void getCurrentWindow().startDragging().catch((error) => {
+      setRuntimeError(errorMessage(error));
+    });
   };
+
+  const handleResizeMouseDown = (event: MouseEvent<HTMLElement>) => {
+    if (event.buttons !== 1) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    void getCurrentWindow().startResizeDragging("SouthEast").catch((error) => {
+      setRuntimeError(errorMessage(error));
+    });
+  };
+
+  const handleIntervalChange = (value: string) => {
+    setIntervalInput(value);
+    setIntervalError(null);
+    const milliseconds = parseIntervalValue(value, intervalUnit);
+
+    if (milliseconds !== null) {
+      dialValueRef.current = milliseconds;
+    }
+
+    void syncInterval(value, intervalUnit);
+  };
+
+  const handleUnitChange = (value: string) => {
+    if (value !== "milliseconds" && value !== "seconds") {
+      return;
+    }
+
+    const milliseconds = parseIntervalValue(intervalInput, intervalUnit) ?? status.intervalMilliseconds;
+    setIntervalUnit(value);
+    setIntervalInput(formatIntervalValue(milliseconds, value));
+    setIntervalError(null);
+  };
+
+  const handleDialPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIntervalFromMilliseconds(intervalFromPointer(event), false);
+  };
+
+  const handleDialPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+
+    setIntervalFromMilliseconds(intervalFromPointer(event), false);
+  };
+
+  const handleDialPointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+    const milliseconds = intervalFromPointer(event);
+    setIntervalFromMilliseconds(milliseconds, true);
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleDialKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const step = event.shiftKey ? 1000 : 100;
+    let nextMilliseconds: number | null = null;
+
+    if (event.key === "ArrowUp" || event.key === "ArrowRight") {
+      nextMilliseconds = dialValueRef.current + step;
+    } else if (event.key === "ArrowDown" || event.key === "ArrowLeft") {
+      nextMilliseconds = dialValueRef.current - step;
+    } else if (event.key === "Home") {
+      nextMilliseconds = MIN_INTERVAL_MILLISECONDS;
+    } else if (event.key === "End") {
+      nextMilliseconds = MAX_INTERVAL_MILLISECONDS;
+    }
+
+    if (nextMilliseconds === null) {
+      return;
+    }
+
+    event.preventDefault();
+    setIntervalFromMilliseconds(nextMilliseconds, true);
+  };
+
+  const saveHotkey = async (hotkey: string) => {
+    setShortcutBusy(true);
+    setShortcutMessage(null);
+    setRuntimeError(null);
+
+    try {
+      const nextStatus = await invoke<ClickerStatus>("set_hotkey", { hotkey });
+      setStatus(nextStatus);
+      window.localStorage.setItem(HOTKEY_STORAGE_KEY, nextStatus.hotkey);
+    } catch (error) {
+      setRuntimeError(errorMessage(error));
+    } finally {
+      setShortcutBusy(false);
+      setIsRecordingShortcut(false);
+    }
+  };
+
+  const handleShortcutKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!isRecordingShortcut) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      setIsRecordingShortcut(false);
+      setShortcutMessage(null);
+      return;
+    }
+
+    const hotkey = shortcutFromEvent(event);
+
+    if (hotkey === null) {
+      setShortcutMessage("Hold Ctrl, Alt, Shift, or Win, then press A-Z, 0-9, or F1-F12.");
+      return;
+    }
+
+    void saveHotkey(hotkey);
+  };
+
+  const clickCountLabel = status.clickCount === 1 ? "1 click" : `${status.clickCount.toLocaleString()} clicks`;
+  const actionDetail = isRunning
+    ? `${clickCountLabel} · next in ${(remainingMilliseconds / 1000).toFixed(1)} s`
+    : `Point to the target, then start · ${displayHotkey(status.hotkey)} toggles`;
+
+  const shortcutError = [runtimeError, status.errorMessage].find(
+    (message) => message?.toLocaleLowerCase().includes("shortcut"),
+  ) ?? null;
+  const shortcutFeedback = shortcutMessage ?? shortcutError;
+  const generalError = runtimeError && runtimeError !== shortcutError
+    ? runtimeError
+    : status.errorMessage && status.errorMessage !== shortcutError
+      ? status.errorMessage
+      : null;
 
   return (
     <main className={`app-shell ${isRunning ? "is-running" : ""}`}>
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">+</span>
-          <div>
-            <p className="eyebrow">OtoTap / Windows utility</p>
-            <h1>Auto clicker</h1>
-          </div>
+      <header className="titlebar" onMouseDown={handleTitlebarMouseDown}>
+        <h1>OtoTap</h1>
+        <div className={`status-indicator status-indicator--${status.status}`} aria-live="polite">
+          <span aria-hidden="true" />
+          <strong>{statusLabel(status.status)}</strong>
         </div>
-        <button className="icon-button" type="button" onClick={hideWindow} title="Hide OtoTap to the tray" aria-label="Hide OtoTap to the tray">
-          <span aria-hidden="true">—</span>
-        </button>
+        <div className="window-controls">
+          <button
+            className="window-button"
+            type="button"
+            onClick={() => void minimizeWindow()}
+            title="Minimize OtoTap"
+            aria-label="Minimize OtoTap"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10" /></svg>
+          </button>
+          <button
+            className="window-button"
+            type="button"
+            onClick={() => void toggleMaximizeWindow()}
+            title="Maximize or restore OtoTap"
+            aria-label="Maximize or restore OtoTap"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" /></svg>
+          </button>
+          <button
+            className="window-button window-button--close"
+            type="button"
+            onClick={() => void hideWindow()}
+            title="Hide OtoTap to the tray"
+            aria-label="Hide OtoTap to the tray"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8" /></svg>
+          </button>
+        </div>
       </header>
 
-      <section className="status-strip" aria-live="polite">
-        <span className={`status-dot ${isRunning ? "active" : ""}`} aria-hidden="true" />
-        <span className="status-name">{statusLabel(status.status)}</span>
-        <span className="status-divider" aria-hidden="true">/</span>
-        <span className="status-detail">{isRunning ? `next tap in ${(remainingMilliseconds / 1000).toFixed(1)}s` : "armed when you are"}</span>
-        <span className="hotkey-chip">{GLOBAL_HOTKEY}</span>
-      </section>
+      <section className="interval-stack" aria-labelledby="interval-label">
+        <div className="instrument-panel readout-panel">
+          <h2 id="interval-label" className="instrument-label">Click interval</h2>
 
-      <section className="hero-panel" aria-labelledby="interval-heading">
-        <div className="panel-kicker"><span>01</span><span>Timing window</span></div>
-        <div className="interval-display">
-          <label htmlFor="interval">Tap every</label>
-          <div className="interval-input-wrap">
-            <input
-              id="interval"
-              type="number"
-              min={MIN_INTERVAL_MILLISECONDS}
-              max={MAX_INTERVAL_MILLISECONDS}
-              step="100"
-              value={intervalInput}
-              onChange={(event) => handleIntervalChange(event.currentTarget.value)}
-              aria-describedby="interval-help interval-error"
+          <div className="lcd-display">
+          <input
+            id="interval"
+            type="number"
+            min={intervalUnit === "seconds" ? 0.1 : MIN_INTERVAL_MILLISECONDS}
+            max={intervalUnit === "seconds" ? 30 : MAX_INTERVAL_MILLISECONDS}
+            step={intervalUnit === "seconds" ? 0.1 : 100}
+            inputMode="decimal"
+            value={intervalInput}
+            onChange={(event) => handleIntervalChange(event.currentTarget.value)}
+            aria-label="Click interval value"
+            aria-describedby={intervalError ? "interval-error" : undefined}
+            disabled={isRunning || busy}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <label className="lcd-unit" htmlFor="interval-unit">
+            <span className="sr-only">Interval unit</span>
+            <select
+              id="interval-unit"
+              value={intervalUnit}
+              onChange={(event) => handleUnitChange(event.currentTarget.value)}
               disabled={isRunning || busy}
-            />
-            <span aria-hidden="true">ms</span>
+              aria-label="Interval unit"
+            >
+              <option value="seconds">SEC</option>
+              <option value="milliseconds">MS</option>
+            </select>
+          </label>
           </div>
-          <h2 id="interval-heading" className="sr-only">Click interval</h2>
         </div>
-        <p id="interval-help" className="helper-text">Fixed interval · 100 ms steps · 100 ms—30 sec</p>
+
+        <div className="instrument-panel dial-panel">
+          <div className="dial-stage">
+          {DIAL_LABELS.map((item) => (
+            <span
+              className="dial-label"
+              key={item.milliseconds}
+              style={dialLabelPosition(item.milliseconds)}
+              aria-hidden="true"
+            >
+              {item.label}
+            </span>
+          ))}
+          <button
+            className="dial-control"
+            type="button"
+            role="slider"
+            aria-label="Click interval dial"
+            aria-valuemin={MIN_INTERVAL_MILLISECONDS}
+            aria-valuemax={MAX_INTERVAL_MILLISECONDS}
+            aria-valuenow={displayedMilliseconds}
+            aria-valuetext={`${formatIntervalValue(displayedMilliseconds, "seconds")} seconds`}
+            onPointerDown={handleDialPointerDown}
+            onPointerMove={handleDialPointerMove}
+            onPointerUp={handleDialPointerUp}
+            onPointerCancel={handleDialPointerUp}
+            onKeyDown={handleDialKeyDown}
+            disabled={isRunning || busy}
+            title="Drag to set the interval. Arrow keys adjust by 0.1 seconds; hold Shift for 1 second."
+          >
+            <span className="dial-ticks" aria-hidden="true" />
+            <span className="dial-knob" aria-hidden="true">
+              <span className="dial-pointer" style={{ transform: `rotate(${dialAngle}deg)` }}>
+                <span />
+              </span>
+            </span>
+          </button>
+        </div>
+
+        <div className="preset-row" aria-label="Interval presets">
+          {PRESET_INTERVALS.map((milliseconds) => (
+            <button
+              key={milliseconds}
+              type="button"
+              className="preset-button"
+              onClick={() => setIntervalFromMilliseconds(milliseconds, true)}
+              aria-pressed={displayedMilliseconds === milliseconds}
+              disabled={isRunning || busy}
+            >
+              {milliseconds / 1000}s
+            </button>
+          ))}
+          </div>
+        </div>
         {intervalError ? <p id="interval-error" className="field-error" role="alert">{intervalError}</p> : null}
-        <div className="progress-track" aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
       </section>
 
-      <section className="detail-grid" aria-label="Session details">
-        <div className="detail-card">
-          <span className="detail-label">Captured target</span>
-          <strong>{formatTarget(status.targetPoint)}</strong>
-          <small>screen coordinates</small>
-        </div>
-        <div className="detail-card">
-          <span className="detail-label">Clicks sent</span>
-          <strong>{status.clickCount.toLocaleString()}</strong>
-          <small>left button</small>
-        </div>
+      <section className="instrument-panel shortcut-panel" aria-labelledby="shortcut-label">
+        <h2 id="shortcut-label" className="instrument-label">Toggle shortcut</h2>
+        <button
+          type="button"
+          className={`shortcut-recorder ${isRecordingShortcut ? "is-recording" : ""}`}
+          onClick={() => {
+            setIsRecordingShortcut(true);
+            setShortcutMessage(null);
+          }}
+          onKeyDown={handleShortcutKeyDown}
+          onBlur={() => setIsRecordingShortcut(false)}
+          aria-pressed={isRecordingShortcut}
+          aria-label={
+            isRecordingShortcut
+              ? "Recording a new toggle shortcut. Press a modifier and a letter, number, or function key."
+              : `Change toggle shortcut. Current shortcut is ${displayHotkey(status.hotkey)}.`
+          }
+          disabled={shortcutBusy}
+          aria-describedby={shortcutFeedback ? "shortcut-feedback" : undefined}
+        >
+          <span className="keycap-row" aria-hidden="true">
+            {isRecordingShortcut ? (
+              <span className="listening-copy">Press shortcut...</span>
+            ) : hotkeyParts.map((part) => <kbd key={part}>{part}</kbd>)}
+          </span>
+          <span className="record-button" aria-hidden="true">
+            {shortcutBusy ? "Save" : isRecordingShortcut ? "Listen" : "Rec"}
+          </span>
+        </button>
+        {shortcutFeedback ? (
+          <p
+            id="shortcut-feedback"
+            className={"shortcut-message" + (shortcutError ? " is-error" : "")}
+            role={shortcutError ? "alert" : "status"}
+          >
+            {shortcutFeedback}
+          </p>
+        ) : null}
       </section>
 
-      <button className={`run-button ${isRunning ? "stop" : "start"}`} type="button" onClick={() => void runCommand(isRunning ? "stop" : "start")} disabled={busy}>
-        <span className="run-button-icon" aria-hidden="true">{isRunning ? "■" : "↗"}</span>
-        <span>{busy ? "Working…" : buttonLabel}</span>
-        <span className="run-button-hint">{isRunning ? "safe stop" : "captures cursor"}</span>
+      <button
+        className={`run-button ${isRunning ? "stop" : "start"}`}
+        type="button"
+        onClick={() => void runCommand(isRunning ? "stop" : "start")}
+        disabled={busy}
+        title={`${isRunning ? "Stop" : "Start"} clicking (${displayHotkey(status.hotkey)})`}
+      >
+        <span className="run-button-indicator" aria-hidden="true">
+          {isRunning ? <span className="stop-glyph" /> : <span className="start-glyph" />}
+        </span>
+        <span className="run-button-copy">
+          <strong>{busy ? "Working..." : isRunning ? "Stop clicking" : "Start clicking"}</strong>
+          <small>{actionDetail}</small>
+        </span>
       </button>
 
-      <div className="footer-note">
-        <span className="footer-signal" aria-hidden="true">●</span>
-        <span>Start captures the cursor position. Close hides to tray; Quit from the tray to exit.</span>
-      </div>
-
-      {runtimeError || status.errorMessage ? (
+      {generalError ? (
         <div className="error-banner" role="alert">
           <span aria-hidden="true">!</span>
-          <span>{runtimeError ?? status.errorMessage}</span>
+          <span>{generalError}</span>
         </div>
       ) : null}
+
+      <div
+        className="resize-handle"
+        onMouseDown={handleResizeMouseDown}
+        aria-hidden="true"
+      />
     </main>
   );
 }

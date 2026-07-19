@@ -16,7 +16,11 @@
         "title": "OtoTap",
         "width": 380,
         "height": 560,
-        "resizable": false,
+        "resizable": true,
+        "minWidth": 340,
+        "minHeight": 500,
+        "decorations": false,
+        "shadow": true,
         "center": true
       }
     ],
