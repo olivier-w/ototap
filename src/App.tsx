@@ -187,8 +187,6 @@ function App() {
     formatIntervalValue(DEFAULT_INTERVAL_MILLISECONDS, "seconds"),
   );
   const [status, setStatus] = useState<ClickerStatus>(INITIAL_STATUS);
-  const [now, setNow] = useState(() => Date.now());
-  const [busy, setBusy] = useState(false);
   const [shortcutBusy, setShortcutBusy] = useState(false);
   const [isRecordingShortcut, setIsRecordingShortcut] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -199,9 +197,6 @@ function App() {
   const isRunning = status.status === "running";
   const intervalMilliseconds = status.intervalMilliseconds || DEFAULT_INTERVAL_MILLISECONDS;
   const displayedMilliseconds = parseIntervalValue(intervalInput, intervalUnit) ?? intervalMilliseconds;
-  const remainingMilliseconds = status.nextClickAt
-    ? Math.max(0, status.nextClickAt - now)
-    : 0;
   const hotkeyParts = status.hotkey.split("+").map(displayHotkeyPart);
   const dialAngle = intervalToDialAngle(displayedMilliseconds);
   const lcdInputWidth = `${Math.max(3, intervalInput.length + 0.4)}ch`;
@@ -251,15 +246,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!isRunning) {
-      return undefined;
-    }
-
-    const timer = window.setInterval(() => setNow(Date.now()), 100);
-    return () => window.clearInterval(timer);
-  }, [isRunning, status.nextClickAt]);
-
   const syncInterval = useCallback(async (value: string, unit: IntervalUnit) => {
     const milliseconds = parseIntervalValue(value, unit);
 
@@ -291,36 +277,6 @@ function App() {
       void syncInterval(nextValue, "seconds");
     }
   }, [syncInterval]);
-
-  const runCommand = useCallback(async (command: "start" | "stop") => {
-    setBusy(true);
-    setRuntimeError(null);
-
-    try {
-      if (command === "start") {
-        const milliseconds = parseIntervalValue(intervalInput, intervalUnit);
-
-        if (milliseconds === null) {
-          setIntervalError(intervalErrorMessage(intervalUnit));
-          return;
-        }
-
-        setIntervalError(null);
-        const nextStatus = await invoke<ClickerStatus>("start_clicker", {
-          intervalMilliseconds: milliseconds,
-        });
-        setStatus(nextStatus);
-        return;
-      }
-
-      const nextStatus = await invoke<ClickerStatus>("stop_clicker");
-      setStatus(nextStatus);
-    } catch (error) {
-      setRuntimeError(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }, [intervalInput, intervalUnit]);
 
   const minimizeWindow = async () => {
     try {
@@ -375,13 +331,15 @@ function App() {
 
   const handleIntervalChange = (value: string) => {
     setIntervalInput(value);
-    setIntervalError(null);
     const milliseconds = parseIntervalValue(value, intervalUnit);
 
-    if (milliseconds !== null) {
-      dialValueRef.current = milliseconds;
+    if (milliseconds === null) {
+      setIntervalError(value.trim() === "" ? null : intervalErrorMessage(intervalUnit));
+      return;
     }
 
+    setIntervalError(null);
+    dialValueRef.current = milliseconds;
     void syncInterval(value, intervalUnit);
   };
 
@@ -478,11 +436,6 @@ function App() {
     void saveHotkey(hotkey);
   };
 
-  const clickCountLabel = status.clickCount === 1 ? "1 click" : `${status.clickCount.toLocaleString()} clicks`;
-  const actionDetail = isRunning
-    ? `${clickCountLabel} · next in ${(remainingMilliseconds / 1000).toFixed(1)} s`
-    : `Point to the target, then start · ${displayHotkey(status.hotkey)} toggles`;
-
   const shortcutError = [runtimeError, status.errorMessage].find(
     (message) => message?.toLocaleLowerCase().includes("shortcut"),
   ) ?? null;
@@ -494,7 +447,7 @@ function App() {
       : null;
 
   return (
-    <main className={`app-shell ${isRunning ? "is-running" : ""}`}>
+    <main className="app-shell">
       <header className="titlebar" onMouseDown={handleTitlebarMouseDown}>
         <h1>OtoTap</h1>
         <div className={`status-indicator status-indicator--${status.status}`} aria-live="polite">
@@ -532,10 +485,8 @@ function App() {
         </div>
       </header>
 
-      <section className="interval-stack" aria-labelledby="interval-label">
+      <section className="interval-stack" aria-label="Click interval">
         <div className="instrument-panel readout-panel">
-          <h2 id="interval-label" className="instrument-label">Click interval</h2>
-
           <div className="lcd-display">
             <div className="lcd-value-well">
               <input
@@ -550,7 +501,7 @@ function App() {
                 onChange={(event) => handleIntervalChange(event.currentTarget.value)}
                 aria-label="Click interval value"
                 aria-describedby={intervalError ? "interval-error" : undefined}
-                disabled={isRunning || busy}
+                disabled={isRunning}
                 autoComplete="off"
                 spellCheck={false}
                 style={{ width: lcdInputWidth }}
@@ -566,7 +517,7 @@ function App() {
               aria-label={`Interval unit: ${intervalUnit}. Switch to ${intervalUnit === "seconds" ? "milliseconds" : "seconds"}.`}
               title={`Switch to ${intervalUnit === "seconds" ? "milliseconds" : "seconds"}`}
               onClick={handleUnitToggle}
-              disabled={isRunning || busy}
+              disabled={isRunning}
             >
               <span className="unit-switch__labels" aria-hidden="true">
                 <span className="unit-switch__label unit-switch__label--seconds">SEC</span>
@@ -595,7 +546,7 @@ function App() {
             onPointerUp={handleDialPointerUp}
             onPointerCancel={handleDialPointerUp}
             onKeyDown={handleDialKeyDown}
-            disabled={isRunning || busy}
+            disabled={isRunning}
             title="Drag to set the interval. Arrow keys adjust by 0.1 seconds; hold Shift for 1 second."
           >
             <span className="dial-scale" aria-hidden="true">
@@ -663,7 +614,7 @@ function App() {
               className="preset-button"
               onClick={() => setIntervalFromMilliseconds(milliseconds, true)}
               aria-pressed={displayedMilliseconds === milliseconds}
-              disabled={isRunning || busy}
+              disabled={isRunning}
             >
               {milliseconds / 1000}s
             </button>
@@ -673,8 +624,7 @@ function App() {
         {intervalError ? <p id="interval-error" className="field-error" role="alert">{intervalError}</p> : null}
       </section>
 
-      <section className="instrument-panel shortcut-panel" aria-labelledby="shortcut-label">
-        <h2 id="shortcut-label" className="instrument-label">Toggle shortcut</h2>
+      <section className="instrument-panel shortcut-panel" aria-label="Toggle shortcut">
         <button
           type="button"
           className={`shortcut-recorder ${isRecordingShortcut ? "is-recording" : ""}`}
@@ -712,22 +662,6 @@ function App() {
           </p>
         ) : null}
       </section>
-
-      <button
-        className={`run-button ${isRunning ? "stop" : "start"}`}
-        type="button"
-        onClick={() => void runCommand(isRunning ? "stop" : "start")}
-        disabled={busy}
-        title={`${isRunning ? "Stop" : "Start"} clicking (${displayHotkey(status.hotkey)})`}
-      >
-        <span className="run-button-indicator" aria-hidden="true">
-          {isRunning ? <span className="stop-glyph" /> : <span className="start-glyph" />}
-        </span>
-        <span className="run-button-copy">
-          <strong>{busy ? "Working..." : isRunning ? "Stop clicking" : "Start clicking"}</strong>
-          <small>{actionDetail}</small>
-        </span>
-      </button>
 
       {generalError ? (
         <div className="error-banner" role="alert">
