@@ -385,14 +385,11 @@ function App() {
     void syncInterval(value, intervalUnit);
   };
 
-  const handleUnitChange = (value: string) => {
-    if (value !== "milliseconds" && value !== "seconds") {
-      return;
-    }
-
+  const handleUnitToggle = () => {
     const milliseconds = parseIntervalValue(intervalInput, intervalUnit) ?? status.intervalMilliseconds;
-    setIntervalUnit(value);
-    setIntervalInput(formatIntervalValue(milliseconds, value));
+    const nextUnit: IntervalUnit = intervalUnit === "seconds" ? "milliseconds" : "seconds";
+    setIntervalUnit(nextUnit);
+    setIntervalInput(formatIntervalValue(milliseconds, nextUnit));
     setIntervalError(null);
   };
 
@@ -540,36 +537,45 @@ function App() {
           <h2 id="interval-label" className="instrument-label">Click interval</h2>
 
           <div className="lcd-display">
-          <input
-            id="interval"
-            className="lcd-value"
-            type="number"
-            min={intervalUnit === "seconds" ? 0.1 : MIN_INTERVAL_MILLISECONDS}
-            max={intervalUnit === "seconds" ? 30 : MAX_INTERVAL_MILLISECONDS}
-            step={intervalUnit === "seconds" ? 0.1 : 100}
-            inputMode="decimal"
-            value={intervalInput}
-            onChange={(event) => handleIntervalChange(event.currentTarget.value)}
-            aria-label="Click interval value"
-            aria-describedby={intervalError ? "interval-error" : undefined}
-            disabled={isRunning || busy}
-            autoComplete="off"
-            spellCheck={false}
-            style={{ width: lcdInputWidth }}
-          />
-          <label className="lcd-unit" htmlFor="interval-unit">
-            <span className="sr-only">Interval unit</span>
-            <select
+            <div className="lcd-value-well">
+              <input
+                id="interval"
+                className="lcd-value"
+                type="number"
+                min={intervalUnit === "seconds" ? 0.1 : MIN_INTERVAL_MILLISECONDS}
+                max={intervalUnit === "seconds" ? 30 : MAX_INTERVAL_MILLISECONDS}
+                step={intervalUnit === "seconds" ? 0.1 : 100}
+                inputMode={intervalUnit === "seconds" ? "decimal" : "numeric"}
+                value={intervalInput}
+                onChange={(event) => handleIntervalChange(event.currentTarget.value)}
+                aria-label="Click interval value"
+                aria-describedby={intervalError ? "interval-error" : undefined}
+                disabled={isRunning || busy}
+                autoComplete="off"
+                spellCheck={false}
+                style={{ width: lcdInputWidth }}
+              />
+            </div>
+
+            <button
               id="interval-unit"
-              value={intervalUnit}
-              onChange={(event) => handleUnitChange(event.currentTarget.value)}
+              className="unit-switch"
+              type="button"
+              role="switch"
+              aria-checked={intervalUnit === "milliseconds"}
+              aria-label={`Interval unit: ${intervalUnit}. Switch to ${intervalUnit === "seconds" ? "milliseconds" : "seconds"}.`}
+              title={`Switch to ${intervalUnit === "seconds" ? "milliseconds" : "seconds"}`}
+              onClick={handleUnitToggle}
               disabled={isRunning || busy}
-              aria-label="Interval unit"
             >
-              <option value="seconds">SEC</option>
-              <option value="milliseconds">MS</option>
-            </select>
-          </label>
+              <span className="unit-switch__labels" aria-hidden="true">
+                <span className="unit-switch__label unit-switch__label--seconds">SEC</span>
+                <span className="unit-switch__label unit-switch__label--milliseconds">MS</span>
+              </span>
+              <span className="unit-switch__track" aria-hidden="true">
+                <span className="unit-switch__thumb" />
+              </span>
+            </button>
           </div>
         </div>
 
