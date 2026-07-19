@@ -7,9 +7,9 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, ProgressBarStatus } from "@tauri-apps/api/window";
 import {
   DEFAULT_GLOBAL_HOTKEY,
   DEFAULT_INTERVAL_MILLISECONDS,
@@ -200,6 +200,18 @@ function App() {
   const hotkeyParts = status.hotkey.split("+").map(displayHotkeyPart);
   const dialAngle = intervalToDialAngle(displayedMilliseconds);
   const lcdInputWidth = `${Math.max(3, intervalInput.length + 0.4)}ch`;
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+
+    void getCurrentWindow().setProgressBar({
+      status: isRunning ? ProgressBarStatus.Indeterminate : ProgressBarStatus.None,
+    }).catch((error) => {
+      setRuntimeError(errorMessage(error));
+    });
+  }, [isRunning]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
