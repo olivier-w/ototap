@@ -463,8 +463,13 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &toggle_item, &quit_item])?;
 
-    TrayIconBuilder::new()
-        .menu(&menu)
+    let mut tray = TrayIconBuilder::new();
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+
+    tray.menu(&menu)
         .tooltip("OtoTap auto clicker")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
