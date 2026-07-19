@@ -6,7 +6,7 @@ use enigo::{Button, Direction, Enigo, Mouse, Settings};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const STATUS_EVENT: &str = "clicker-status";
@@ -552,12 +552,6 @@ pub fn run() {
             toggle_clicker,
             get_clicker_status
         ])
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
         .build(tauri::generate_context!())
         .expect("error while building OtoTap")
         .run(|app, event| {

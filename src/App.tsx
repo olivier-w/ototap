@@ -306,9 +306,9 @@ function App() {
     }
   };
 
-  const hideWindow = async () => {
+  const closeWindow = async () => {
     try {
-      await getCurrentWindow().hide();
+      await getCurrentWindow().close();
     } catch (error) {
       setRuntimeError(errorMessage(error));
     }
@@ -488,9 +488,9 @@ function App() {
           <button
             className="window-button window-button--close"
             type="button"
-            onClick={() => void hideWindow()}
-            title="Hide OtoTap to the tray"
-            aria-label="Hide OtoTap to the tray"
+            onClick={() => void closeWindow()}
+            title="Close OtoTap"
+            aria-label="Close OtoTap"
           >
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8" /></svg>
           </button>
