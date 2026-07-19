@@ -28,6 +28,11 @@ const HOTKEY_STORAGE_KEY = "ototap.global-hotkey";
 const PRESET_INTERVALS = [1000, 5000, 10_000, 30_000];
 const DIAL_MIN_ANGLE = -132;
 const DIAL_MAX_ANGLE = 132;
+const DIAL_CENTER = 120;
+const DIAL_TICK_COUNT = 49;
+const DIAL_TICK_ANGLES = Array.from({ length: DIAL_TICK_COUNT }, (_, index) => (
+  DIAL_MIN_ANGLE + (index / (DIAL_TICK_COUNT - 1)) * (DIAL_MAX_ANGLE - DIAL_MIN_ANGLE)
+));
 const DIAL_LABELS = [
   { milliseconds: 100, label: "0.1" },
   { milliseconds: 1000, label: "1" },
@@ -168,13 +173,11 @@ function intervalFromPointer(event: PointerEvent<HTMLButtonElement>): number {
   return dialAngleToInterval(angle);
 }
 
-function dialLabelPosition(milliseconds: number): { left: string; top: string } {
-  const angle = intervalToDialAngle(milliseconds);
+function dialPoint(angle: number, radius: number): { x: number; y: number } {
   const radians = (angle - 90) * (Math.PI / 180);
-  const radius = 45;
   return {
-    left: `${50 + Math.cos(radians) * radius}%`,
-    top: `${50 + Math.sin(radians) * radius}%`,
+    x: DIAL_CENTER + Math.cos(radians) * radius,
+    y: DIAL_CENTER + Math.sin(radians) * radius,
   };
 }
 
@@ -201,6 +204,7 @@ function App() {
     : 0;
   const hotkeyParts = status.hotkey.split("+").map(displayHotkeyPart);
   const dialAngle = intervalToDialAngle(displayedMilliseconds);
+  const lcdInputWidth = `${Math.max(3, intervalInput.length + 0.4)}ch`;
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -538,6 +542,7 @@ function App() {
           <div className="lcd-display">
           <input
             id="interval"
+            className="lcd-value"
             type="number"
             min={intervalUnit === "seconds" ? 0.1 : MIN_INTERVAL_MILLISECONDS}
             max={intervalUnit === "seconds" ? 30 : MAX_INTERVAL_MILLISECONDS}
@@ -550,6 +555,7 @@ function App() {
             disabled={isRunning || busy}
             autoComplete="off"
             spellCheck={false}
+            style={{ width: lcdInputWidth }}
           />
           <label className="lcd-unit" htmlFor="interval-unit">
             <span className="sr-only">Interval unit</span>
@@ -569,16 +575,6 @@ function App() {
 
         <div className="instrument-panel dial-panel">
           <div className="dial-stage">
-          {DIAL_LABELS.map((item) => (
-            <span
-              className="dial-label"
-              key={item.milliseconds}
-              style={dialLabelPosition(item.milliseconds)}
-              aria-hidden="true"
-            >
-              {item.label}
-            </span>
-          ))}
           <button
             className="dial-control"
             type="button"
@@ -596,7 +592,55 @@ function App() {
             disabled={isRunning || busy}
             title="Drag to set the interval. Arrow keys adjust by 0.1 seconds; hold Shift for 1 second."
           >
-            <span className="dial-ticks" aria-hidden="true" />
+            <span className="dial-scale" aria-hidden="true">
+              <svg viewBox="0 0 240 240" focusable="false">
+                <g className="dial-minor-ticks">
+                  {DIAL_TICK_ANGLES.map((angle, index) => {
+                    const outerPoint = dialPoint(angle, 105);
+                    const innerPoint = dialPoint(angle, index % 4 === 0 ? 91 : 96);
+
+                    return (
+                      <line
+                        key={angle}
+                        className={index % 4 === 0 ? "is-medium" : undefined}
+                        x1={innerPoint.x}
+                        y1={innerPoint.y}
+                        x2={outerPoint.x}
+                        y2={outerPoint.y}
+                      />
+                    );
+                  })}
+                </g>
+                <g className="dial-major-ticks">
+                  {DIAL_LABELS.map((item) => {
+                    const angle = intervalToDialAngle(item.milliseconds);
+                    const innerPoint = dialPoint(angle, 86);
+                    const outerPoint = dialPoint(angle, 106);
+
+                    return (
+                      <line
+                        key={item.milliseconds}
+                        x1={innerPoint.x}
+                        y1={innerPoint.y}
+                        x2={outerPoint.x}
+                        y2={outerPoint.y}
+                      />
+                    );
+                  })}
+                </g>
+                <g className="dial-labels">
+                  {DIAL_LABELS.map((item) => {
+                    const labelPoint = dialPoint(intervalToDialAngle(item.milliseconds), 113);
+
+                    return (
+                      <text key={item.milliseconds} x={labelPoint.x} y={labelPoint.y}>
+                        {item.label}
+                      </text>
+                    );
+                  })}
+                </g>
+              </svg>
+            </span>
             <span className="dial-knob" aria-hidden="true">
               <span className="dial-pointer" style={{ transform: `rotate(${dialAngle}deg)` }}>
                 <span />

@@ -211,11 +211,13 @@ select:disabled {
 }
 
 .lcd-display {
-  display: flex;
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: end;
   justify-content: center;
+  gap: 8px;
   min-width: 0;
-  padding: 7px 12px 6px 15px;
+  padding: 7px 12px 6px;
   border: 1px solid #080a09;
   border-radius: 6px;
   background: var(--lcd);
@@ -226,8 +228,8 @@ select:disabled {
 }
 
 .lcd-display input {
-  min-width: 0;
-  width: 100%;
+  min-width: 3ch;
+  max-width: 6.4ch;
   padding: 0;
   border: 0;
   outline: 0;
@@ -239,7 +241,7 @@ select:disabled {
   font-weight: 400;
   letter-spacing: -0.075em;
   line-height: 1;
-  text-align: right;
+  text-align: center;
 }
 
 .lcd-display input:focus-visible {
@@ -257,7 +259,7 @@ select:disabled {
   display: flex;
   align-items: flex-end;
   flex: 0 0 auto;
-  padding: 0 0 4px 9px;
+  padding: 0 0 4px;
 }
 
 .lcd-unit select {
@@ -308,60 +310,85 @@ select:disabled {
   outline-offset: 1px;
 }
 
-.dial-ticks {
+.dial-scale {
   position: absolute;
-  inset: 2%;
+  inset: 0;
   z-index: 0;
-  border-radius: 50%;
-  background: repeating-conic-gradient(
-    from -132deg,
-    var(--ink) 0deg 0.9deg,
-    transparent 0.9deg 8.8deg
-  );
-  opacity: 0.86;
+  pointer-events: none;
 }
 
-.dial-ticks::after {
-  position: absolute;
-  inset: 8%;
-  border-radius: 50%;
-  background: var(--surface);
-  content: "";
+.dial-scale svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.dial-minor-ticks,
+.dial-major-ticks {
+  fill: none;
+  stroke: var(--ink);
+  stroke-linecap: square;
+}
+
+.dial-minor-ticks {
+  stroke-width: 1.25;
+  opacity: 0.8;
+}
+
+.dial-minor-ticks .is-medium {
+  stroke-width: 2;
+}
+
+.dial-major-ticks {
+  stroke-width: 3.25;
+}
+
+.dial-labels {
+  fill: #252825;
+  font: 600 14px/1 Bahnschrift, Aptos, sans-serif;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+}
+
+.dial-labels text {
+  dominant-baseline: middle;
 }
 .dial-knob {
   position: absolute;
-  inset: 9%;
+  inset: 13%;
   z-index: 1;
   border: 2px solid #080a09;
   border-radius: 50%;
   background:
-    radial-gradient(circle at 42% 34%, #3e423e 0 5%, transparent 6%),
-    #202421;
+    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.13), transparent 38%),
+    linear-gradient(145deg, #303431 0%, #202421 52%, #151816 100%);
   box-shadow:
-    inset 0 2px 2px rgba(255, 255, 255, 0.12),
-    inset 0 -8px 12px rgba(0, 0, 0, 0.5),
-    0 5px 9px rgba(24, 27, 25, 0.28);
+    inset 0 2px 2px rgba(255, 255, 255, 0.16),
+    inset 0 -10px 18px rgba(0, 0, 0, 0.48),
+    0 2px 2px rgba(24, 27, 25, 0.18),
+    0 8px 14px rgba(24, 27, 25, 0.25);
 }
 
 .dial-knob::before {
   position: absolute;
-  inset: -7px;
+  inset: -6px;
   border-radius: 50%;
   background: repeating-conic-gradient(
-    #101311 0deg 2deg,
-    #2d312e 2deg 4deg
+    #0c0f0d 0deg 1.7deg,
+    #343936 1.7deg 3.4deg
   );
-  -webkit-mask: radial-gradient(circle, transparent 0 91%, #000 92% 100%);
-  mask: radial-gradient(circle, transparent 0 91%, #000 92% 100%);
+  -webkit-mask: radial-gradient(circle, transparent 0 90%, #000 91% 100%);
+  mask: radial-gradient(circle, transparent 0 90%, #000 91% 100%);
   content: "";
 }
 
 .dial-knob::after {
   position: absolute;
-  inset: 45%;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  inset: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 50%;
-  background: #0d100e;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
   content: "";
 }
 
@@ -373,26 +400,16 @@ select:disabled {
 
 .dial-pointer > span {
   position: absolute;
-  top: 12px;
+  top: 9%;
   left: 50%;
   width: 4px;
-  height: 27px;
+  height: 28%;
   border-radius: 2px;
-  background: #f2f0e7;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  background: linear-gradient(90deg, #d9d8d0, #fffef6 48%, #c5c4bc);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.46),
+    0 1px 2px rgba(0, 0, 0, 0.38);
   transform: translateX(-50%);
-}
-
-.dial-label {
-  position: absolute;
-  z-index: 3;
-  color: #252825;
-  font-family: Bahnschrift, Aptos, sans-serif;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  pointer-events: none;
-  transform: translate(-50%, -50%);
 }
 
 .preset-row {
